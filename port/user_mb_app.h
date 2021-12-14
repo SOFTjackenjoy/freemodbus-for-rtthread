@@ -6,6 +6,10 @@
 #include "mbconfig.h"
 #include "mbframe.h"
 #include "mbutils.h"
+#ifdef RT_USING_DEVICE
+#else
+#include "gconf.h"
+#endif
 
 /* -----------------------Slave Defines -------------------------------------*/
 #define S_DISCRETE_INPUT_START                    RT_S_DISCRETE_INPUT_START

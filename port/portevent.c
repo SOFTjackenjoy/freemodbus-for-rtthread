@@ -22,6 +22,10 @@
 /* ----------------------- Modbus includes ----------------------------------*/
 #include "mb.h"
 #include "mbport.h"
+#ifdef RT_USING_DEVICE
+#else
+#include "gconf.h"
+#endif
 
 /* ----------------------- Variables ----------------------------------------*/
 static struct rt_event     xSlaveOsEvent;

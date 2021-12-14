@@ -24,10 +24,16 @@
 /* ----------------------- Modbus includes ----------------------------------*/
 #include "mb.h"
 #include "mbport.h"
+
+#ifdef RT_USING_DEVICE
 #include "rtdevice.h"
 #include "board.h"
-
+#else
+#include "gconf.h"
+#endif
 /* ----------------------- Static variables ---------------------------------*/
+#ifdef RT_USING_DEVICE
+#endif
 ALIGN(RT_ALIGN_SIZE)
 /* software simulation serial transmit IRQ handler thread stack */
 static rt_uint8_t serial_soft_trans_irq_stack[512];
@@ -36,22 +42,43 @@ static struct rt_thread thread_serial_soft_trans_irq;
 /* serial event */
 static struct rt_event event_serial;
 /* modbus slave serial device */
+#ifdef RT_USING_DEVICE
 static rt_serial_t *serial;
+#endif
 
 /* ----------------------- Defines ------------------------------------------*/
 /* serial transmit event */
 #define EVENT_SERIAL_TRANS_START    (1<<0)
+#define RT_MODBUS_SLAVE_USE_CONTROL_PIN
 
 /* ----------------------- static functions ---------------------------------*/
-static void prvvUARTTxReadyISR(void);
-static void prvvUARTRxISR(void);
+#ifdef RT_USING_DEVICE
 static rt_err_t serial_rx_ind(rt_device_t dev, rt_size_t size);
+static void prvvUARTRxISR(void);
+#endif
+static void prvvUARTTxReadyISR(void);
 static void serial_soft_trans_irq(void* parameter);
 
 /* ----------------------- Start implementation -----------------------------*/
 BOOL xMBPortSerialInit(UCHAR ucPORT, ULONG ulBaudRate, UCHAR ucDataBits,
         eMBParity eParity)
 {
+#ifndef RT_USING_DEVICE
+	mcu_uart_open(MCU_UART_2);
+
+    /* software initialize */
+    rt_event_init(&event_serial, "slave event", RT_IPC_FLAG_PRIO);
+    rt_thread_init(&thread_serial_soft_trans_irq,
+                   "slave trans",
+                   serial_soft_trans_irq,
+                   RT_NULL,
+                   serial_soft_trans_irq_stack,
+                   sizeof(serial_soft_trans_irq_stack),
+                   10, 5);
+    rt_thread_startup(&thread_serial_soft_trans_irq);
+
+#else
+
     rt_device_t dev = RT_NULL;
     char uart_name[20];
     /**
@@ -115,12 +142,48 @@ BOOL xMBPortSerialInit(UCHAR ucPORT, ULONG ulBaudRate, UCHAR ucDataBits,
                    sizeof(serial_soft_trans_irq_stack),
                    10, 5);
     rt_thread_startup(&thread_serial_soft_trans_irq);
-
+#endif
     return TRUE;
 }
 
 void vMBPortSerialEnable(BOOL xRxEnable, BOOL xTxEnable)
 {
+#ifndef RT_USING_DEVICE
+    rt_uint32_t recved_event;
+    if (xRxEnable)
+    {
+        /* enable RX interrupt */
+		UART_INTRXThresholdEn( UART1 );
+        /* switch 485 to receive mode */
+#if defined(RT_MODBUS_SLAVE_USE_CONTROL_PIN)
+		sIoStatus("ren",0);
+#endif
+    }
+    else
+    {
+        /* switch 485 to transmit mode */
+#if defined(RT_MODBUS_SLAVE_USE_CONTROL_PIN)
+		sIoStatus("ren",1);
+#endif
+        /* disable RX interrupt */
+		UART_INTRXThresholdDis( UART1 );
+    }
+    if (xTxEnable)
+    {
+        /* start serial transmit */
+        rt_event_send(&event_serial, EVENT_SERIAL_TRANS_START);
+//		sIoStatus("ren",1);
+    }
+    else
+    {
+        /* stop serial transmit */
+        rt_event_recv(&event_serial, EVENT_SERIAL_TRANS_START,
+                RT_EVENT_FLAG_OR | RT_EVENT_FLAG_CLEAR, 0,
+                &recved_event);
+    }
+
+#else
+
     rt_uint32_t recved_event;
     if (xRxEnable)
     {
@@ -152,22 +215,34 @@ void vMBPortSerialEnable(BOOL xRxEnable, BOOL xTxEnable)
                 RT_EVENT_FLAG_OR | RT_EVENT_FLAG_CLEAR, 0,
                 &recved_event);
     }
+#endif
 }
 
 void vMBPortClose(void)
 {
+#ifndef RT_USING_DEVICE
+#else
     serial->parent.close(&(serial->parent));
+#endif
 }
 
 BOOL xMBPortSerialPutByte(CHAR ucByte)
 {
+#ifndef RT_USING_DEVICE
+	mcu_uart_write(MCU_UART_2, (u8 *)&ucByte, 1);
+#else
     serial->parent.write(&(serial->parent), 0, &ucByte, 1);
+#endif
     return TRUE;
 }
 
 BOOL xMBPortSerialGetByte(CHAR * pucByte)
 {
+#ifndef RT_USING_DEVICE
+	mcu_uart_read (MCU_UART_2, (u8 *)pucByte, 1);
+#else
     serial->parent.read(&(serial->parent), 0, pucByte, 1);
+#endif
     return TRUE;
 }
 
@@ -178,6 +253,8 @@ BOOL xMBPortSerialGetByte(CHAR * pucByte)
  * a new character can be sent. The protocol stack will then call 
  * xMBPortSerialPutByte( ) to send the character.
  */
+#ifdef RT_USING_DEVICE
+#endif
 void prvvUARTTxReadyISR(void)
 {
     pxMBFrameCBTransmitterEmpty();
@@ -189,6 +266,8 @@ void prvvUARTTxReadyISR(void)
  * protocol stack will then call xMBPortSerialGetByte( ) to retrieve the
  * character.
  */
+#ifdef RT_USING_DEVICE
+#endif
 void prvvUARTRxISR(void)
 {
     pxMBFrameCBByteReceived();
@@ -199,6 +278,8 @@ void prvvUARTRxISR(void)
  *
  * @param parameter parameter
  */
+#ifdef RT_USING_DEVICE
+#endif
 static void serial_soft_trans_irq(void* parameter) {
     rt_uint32_t recved_event;
     while (1)
@@ -219,8 +300,10 @@ static void serial_soft_trans_irq(void* parameter) {
  *
  * @return return RT_EOK
  */
+#ifdef RT_USING_DEVICE
 static rt_err_t serial_rx_ind(rt_device_t dev, rt_size_t size) {
     while(size--)
         prvvUARTRxISR();
     return RT_EOK;
 }
+#endif
